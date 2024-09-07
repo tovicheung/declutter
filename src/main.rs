@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, fs, path::{Path, PathBuf}};
+use std::{env, ffi::OsStr, fs, path::{Path, PathBuf}};
 
 use declutter::{Allow, parse_yaml, RuleSet};
 
@@ -16,10 +16,12 @@ fn option_osstr_eq_string(option: Option<&OsStr>, string: &String) -> bool {
     false
 }
 
-fn check(path: &PathBuf, ruleset: &RuleSet) -> Result<(), String> {
+fn check(path: &PathBuf, ruleset: &RuleSet) -> Result<bool, String> {
     if !path.is_dir() {
         return Err("path is not directory".to_string());
     }
+
+    let mut clutter = false;
 
     for entry in path.read_dir().map_err(|_| "read_dir() failed")? {
         if let Ok(entry) = entry {
@@ -52,13 +54,14 @@ fn check(path: &PathBuf, ruleset: &RuleSet) -> Result<(), String> {
             }
 
             if !ok {
-                println!("{} violated rules", p.to_str().unwrap())
+                clutter = true;
+                println!("\x1b[1;33m>\x1b[m {}", p.to_str().unwrap())
             } else if p.is_dir() && ruleset.recursive {
                 check(&p, &ruleset)?;
             }
         }
     }
-    Ok(())
+    Ok(clutter)
 }
 
 fn error(when: &str, path_string: String, err: String) {
@@ -67,9 +70,34 @@ fn error(when: &str, path_string: String, err: String) {
 }
 
 fn main() {
-    let config_string = fs::read_to_string("declutter.yaml").expect("error reading file");
-    let yaml = YamlLoader::load_from_str(config_string.as_str()).expect("error parsing yaml");
-    let hash = yaml.into_iter().next().expect("no documents in yaml").into_hash().expect("error converting to hash");
+    let args = env::args().collect::<Vec<_>>();
+    let config_path = if args.len() >= 2 {
+        args.iter().nth(1).unwrap().clone()
+    } else {
+        "declutter.yaml".to_string()
+    };
+    let config_string = match fs::read_to_string(&config_path) {
+        Ok(string) => string,
+        Err(err) => return error("reading config", config_path, err.to_string()),
+    };
+    let yaml = match YamlLoader::load_from_str(config_string.as_str()) {
+        Ok(yaml) => yaml,
+        Err(err) => return error("reading config", config_path, err.to_string()),
+    };
+    
+    let doc = match yaml.into_iter().next() {
+        Some(doc) => doc,
+        None => return error("reading config", config_path, "no contents".to_string()),
+    };
+
+    let hash = match doc.into_hash() {
+        Some(hash) => hash,
+        None => return error("reading config", config_path, "expected key-value pairs".to_string()),
+    };
+
+    println!("\x1b[1;33mChecking for clutter\x1b[m");
+
+    let mut clutter = false;
     
     for (key, body) in hash {
 
@@ -78,8 +106,9 @@ fn main() {
             Ok(path) => {
                 match parse_yaml(body) {
                     Ok(ruleset) => {
-                        if let Err(err) = check(&path, &ruleset) {
-                            error("checking path", path_string, err);
+                        match check(&path, &ruleset) {
+                            Ok(child_clutter) => clutter = clutter || child_clutter,
+                            Err(err) => error("checking path", path_string, err),
                         }
                     },
                     Err(err) => error("parsing yaml under path", path_string, err),
@@ -87,5 +116,9 @@ fn main() {
             },
             Err(err) => error("accessing path", path_string, err.to_string()),
         }
+    }
+
+    if !clutter {
+        println!("\x1b[1;32m> No clutter! Well done!\x1b[m")
     }
 }
