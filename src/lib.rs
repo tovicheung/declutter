@@ -1,6 +1,5 @@
 use yaml_rust::Yaml;
 
-
 pub struct RuleSet {
     pub recursive: bool,
     pub allows: Vec<Allow>,
@@ -81,7 +80,7 @@ pub fn parse_yaml(yaml: Yaml) -> Result<RuleSet, String> {
     Ok(
         RuleSet {
             recursive,
-            allows: allows,
+            allows,
         }
     )
 }
