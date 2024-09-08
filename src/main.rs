@@ -1,20 +1,8 @@
-use std::{env, ffi::OsStr, fs, path::{Path, PathBuf}};
+use std::{env, fs, path::{Path, PathBuf}};
 
-use declutter::{Allow, parse_yaml_ruleset, RuleSet};
+use declutter::{parse_yaml_ruleset, RuleSet};
 
-extern crate yaml_rust;
 use yaml_rust::{Yaml, YamlLoader};
-
-fn option_osstr_eq_string(option: Option<&OsStr>, string: &String) -> bool {
-    if let Some(osstr) = option {
-        if let Some(str) = osstr.to_str() {
-            if str == string {
-                return true;
-            }
-        }
-    }
-    false
-}
 
 /// Returns Result<{everything clean?}, {error message}>
 fn is_dir_clean(path: &PathBuf, ruleset: &RuleSet) -> Result<bool, String> {
@@ -24,25 +12,22 @@ fn is_dir_clean(path: &PathBuf, ruleset: &RuleSet) -> Result<bool, String> {
 
     let mut clean = true;
 
-    for entry in path.read_dir().map_err(|_| "read_dir() failed")? {
-        let entry_path = entry.map_err(|err| err.to_string())?.path();
+    for entry in path.read_dir().map_err(|_| "read_dir() failed")?.map(|e| e.map_err(|err| err.to_string())) {
+        let entry = entry?;
+        let entry_path = entry.path();
         'check_rules: {
-            for rule in &ruleset.allows {
-                if match rule {
-                    Allow::Dir => entry_path.is_dir(),
-                    Allow::Ext(ext) => option_osstr_eq_string(entry_path.extension(), ext),
-                    Allow::Name(name) => option_osstr_eq_string(entry_path.file_name(), name),
-                } {
-                    // this entry matches one of the rules, check recursive and leave
-                    if entry_path.is_dir() && ruleset.recursive {
-                        clean = clean && is_dir_clean(&entry_path, &ruleset)?;
-                    }
+            for rule in &ruleset.rules {
+                if !rule.check(&entry)? {
+                    // violated a rule
+                    clean = false;
+                    println!("\x1b[1;33m>\x1b[m {}", entry_path.to_str().unwrap());
                     break 'check_rules;
                 }
             }
-            // this entry does not match any of the rules
-            clean = false;
-            println!("\x1b[1;33m>\x1b[m {}", entry_path.to_str().unwrap());
+            // no violated rules
+            if entry_path.is_dir() && ruleset.recursive {
+                clean = clean && is_dir_clean(&entry_path, &ruleset)?;
+            }
         }
     }
     Ok(clean)
@@ -96,15 +81,13 @@ fn main() {
         None => return print_error(format!("parsing config at {}", config_path), "cannot convert yaml to hashmap".to_string()),
     };
 
-    println!("\x1b[1;33mChecking for clutter\x1b[m");
-
     let mut clean = true;
     
     for (key, body) in hashmap {
-        clean = clean && is_yaml_entry_clean(key, body)
+        clean = is_yaml_entry_clean(key, body)
             .unwrap_or_else(
                 |(when, err)| {print_error(when, err); false}
-            )
+            ) && clean;
     }
 
     if clean {

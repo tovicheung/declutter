@@ -6,6 +6,7 @@ repository = "https://github.com/tovicheung/declutter"
 
 [dependencies]
 yaml-rust = "0.4"
+parse-size = "1.0.0"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]

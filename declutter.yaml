@@ -1,12 +1,13 @@
 sample-fs:
   recursive: false
   allow-name:
-    - pngs
+    - images
     - txts
   allow-type: dir
   # only allow directories and anything named "pngs" or "txts"
 
 sample-fs/images:
+  # recursive also implies allow directories
   recursive: true
   allow-type:
     - .png
@@ -18,4 +19,5 @@ sample-fs/images:
 sample-fs/txts:
   recursive: false
   allow-type: .txt
+  max-size: 5
   # only allow txt files, no directories
