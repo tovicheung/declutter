@@ -5,15 +5,6 @@ pub struct RuleSet {
     pub allows: Vec<Allow>,
 }
 
-impl IntoIterator for RuleSet {
-    type Item = Allow;
-    type IntoIter = std::vec::IntoIter<Allow>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.allows.into_iter()
-    }
-}
-
 #[derive(PartialEq)]
 pub enum Allow {
     Dir,
@@ -49,15 +40,14 @@ fn parse_array_or_one(body: Yaml, func: fn(Yaml) -> Result<Allow, String>) -> Re
     )
 }
 
-pub fn parse_yaml(yaml: Yaml) -> Result<RuleSet, String> {
-    let hash = yaml.into_hash().ok_or("expected key-value pairs under path")?;
+pub fn parse_yaml_ruleset(yaml: Yaml) -> Result<RuleSet, String> {
+    let hashmap = yaml.into_hash().ok_or("expected key-value pairs under path")?;
 
     let mut recursive = true;
-    let mut allows = Vec::<Allow>::new();
+    let mut allows = Vec::<Allow>::with_capacity(hashmap.len());
 
-    for (key, value) in hash {
-        let x = key.into_string().ok_or("expected string as key")?;
-        match x.as_str() {
+    for (key, value) in hashmap {
+        match key.into_string().ok_or("expected string as key")?.as_str() {
             "recursive" => match value {
                 Yaml::Boolean(bool) => recursive = bool,
                 _ => return Err("expected boolean for recursive".to_string()),

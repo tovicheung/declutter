@@ -1,9 +1,9 @@
 use std::{env, ffi::OsStr, fs, path::{Path, PathBuf}};
 
-use declutter::{Allow, parse_yaml, RuleSet};
+use declutter::{Allow, parse_yaml_ruleset, RuleSet};
 
 extern crate yaml_rust;
-use yaml_rust::YamlLoader;
+use yaml_rust::{Yaml, YamlLoader};
 
 fn option_osstr_eq_string(option: Option<&OsStr>, string: &String) -> bool {
     if let Some(osstr) = option {
@@ -16,109 +16,98 @@ fn option_osstr_eq_string(option: Option<&OsStr>, string: &String) -> bool {
     false
 }
 
-fn check(path: &PathBuf, ruleset: &RuleSet) -> Result<bool, String> {
+/// Returns Result<{everything clean?}, {error message}>
+fn is_dir_clean(path: &PathBuf, ruleset: &RuleSet) -> Result<bool, String> {
     if !path.is_dir() {
         return Err("path is not directory".to_string());
     }
 
-    let mut clutter = false;
+    let mut clean = true;
 
     for entry in path.read_dir().map_err(|_| "read_dir() failed")? {
-        if let Ok(entry) = entry {
-            let p = entry.path();
-            // println!("{:?}", p);
-
-            let mut ok = false;
-
+        let entry_path = entry.map_err(|err| err.to_string())?.path();
+        'check_rules: {
             for rule in &ruleset.allows {
-                match rule {
-                    Allow::Dir => {
-                        if p.is_dir() {
-                            ok = true;
-                            break;
-                        }
-                    },
-                    Allow::Ext(ext) => {
-                        if option_osstr_eq_string(p.extension(), ext) {
-                            ok = true;
-                            break;
-                        }
-                    },
-                    Allow::Name(name) => {
-                        if option_osstr_eq_string(p.file_name(), name) {
-                            ok = true;
-                            break;
-                        }
+                if match rule {
+                    Allow::Dir => entry_path.is_dir(),
+                    Allow::Ext(ext) => option_osstr_eq_string(entry_path.extension(), ext),
+                    Allow::Name(name) => option_osstr_eq_string(entry_path.file_name(), name),
+                } {
+                    // this entry matches one of the rules, check recursive and leave
+                    if entry_path.is_dir() && ruleset.recursive {
+                        clean = clean && is_dir_clean(&entry_path, &ruleset)?;
                     }
+                    break 'check_rules;
                 }
             }
-
-            if !ok {
-                clutter = true;
-                println!("\x1b[1;33m>\x1b[m {}", p.to_str().unwrap())
-            } else if p.is_dir() && ruleset.recursive {
-                check(&p, &ruleset)?;
-            }
+            // this entry does not match any of the rules
+            clean = false;
+            println!("\x1b[1;33m>\x1b[m {}", entry_path.to_str().unwrap());
         }
     }
-    Ok(clutter)
+    Ok(clean)
 }
 
-fn error(when: &str, path_string: String, err: String) {
-    println!("\x1b[1;31m> Error\x1b[m when {} {}", when, path_string);
-    println!("\x1b[1;31m> \x1b[m{}", err);
+/// Returns path-content as key-value hash
+fn read_config(config_path: &String) -> Result<Yaml, String> {
+    YamlLoader::load_from_str(
+        fs::read_to_string(config_path)
+            .map_err(|err| err.to_string())?
+            .as_str()
+    )
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .next()
+        .ok_or("no contents".to_string())
+        // only read the first document
+}
+
+fn error(when: String, err: String) {
+    eprintln!("\x1b[1;31m> Error\x1b[m when {}", when);
+    eprintln!("\x1b[1;31m> \x1b[m{}", err);
+}
+
+// Returns Result<{is there clutter?}, ({error when ...}, {error message})>
+fn is_yaml_entry_clean(key: Yaml, body: Yaml) -> Result<bool, (String, String)> {
+    let path_string = key.clone().into_string().ok_or(("parsing yaml".to_string(), format!("expected string path but got {:?}", key)))?;
+    Ok(
+        is_dir_clean(
+            &Path::new(path_string.as_str())
+                .canonicalize()
+                .map_err(|err| (format!("accessing path {}", path_string), err.to_string()))?,
+            &parse_yaml_ruleset(body)
+                .map_err(|err| ("parsing yaml ruleset".to_string(), err))?
+        ).map_err(|err| (format!("checking entries at path {}", path_string), err))?
+    )
 }
 
 fn main() {
-    let args = env::args().collect::<Vec<_>>();
-    let config_path = if args.len() >= 2 {
-        args.iter().nth(1).unwrap().clone()
-    } else {
-        "declutter.yaml".to_string()
-    };
-    let config_string = match fs::read_to_string(&config_path) {
-        Ok(string) => string,
-        Err(err) => return error("reading config", config_path, err.to_string()),
-    };
-    let yaml = match YamlLoader::load_from_str(config_string.as_str()) {
-        Ok(yaml) => yaml,
-        Err(err) => return error("reading config", config_path, err.to_string()),
-    };
-    
-    let doc = match yaml.into_iter().next() {
-        Some(doc) => doc,
-        None => return error("reading config", config_path, "no contents".to_string()),
+    let config_path = env::args().nth(1).unwrap_or("declutter.yaml".to_string());
+
+    println!("\x1b[1mReading config from {}\x1b[m", config_path);
+
+    let doc = match read_config(&config_path) {
+        Ok(doc) => doc,
+        Err(msg) => return error(format!("reading config at {}", config_path), msg),
     };
 
-    let hash = match doc.into_hash() {
+    let hashmap = match doc.into_hash() {
         Some(hash) => hash,
-        None => return error("reading config", config_path, "expected key-value pairs".to_string()),
+        None => return error(format!("parsing config at {}", config_path), "cannot convert yaml to hashmap".to_string()),
     };
 
     println!("\x1b[1;33mChecking for clutter\x1b[m");
 
-    let mut clutter = false;
+    let mut clean = true;
     
-    for (key, body) in hash {
-
-        let path_string = key.into_string().expect("expected string path");
-        match Path::new(path_string.as_str()).canonicalize() {
-            Ok(path) => {
-                match parse_yaml(body) {
-                    Ok(ruleset) => {
-                        match check(&path, &ruleset) {
-                            Ok(child_clutter) => clutter = clutter || child_clutter,
-                            Err(err) => error("checking path", path_string, err),
-                        }
-                    },
-                    Err(err) => error("parsing yaml under path", path_string, err),
-                }
-            },
-            Err(err) => error("accessing path", path_string, err.to_string()),
-        }
+    for (key, body) in hashmap {
+        clean = clean && is_yaml_entry_clean(key, body)
+            .unwrap_or_else(
+                |(when, err)| {error(when, err); false}
+            )
     }
 
-    if !clutter {
+    if clean {
         println!("\x1b[1;32m> No clutter! Well done!\x1b[m")
     }
 }
