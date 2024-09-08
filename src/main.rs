@@ -62,7 +62,7 @@ fn read_config(config_path: &String) -> Result<Yaml, String> {
         // only read the first document
 }
 
-fn error(when: String, err: String) {
+fn print_error(when: String, err: String) {
     eprintln!("\x1b[1;31m> Error\x1b[m when {}", when);
     eprintln!("\x1b[1;31m> \x1b[m{}", err);
 }
@@ -88,12 +88,12 @@ fn main() {
 
     let doc = match read_config(&config_path) {
         Ok(doc) => doc,
-        Err(msg) => return error(format!("reading config at {}", config_path), msg),
+        Err(msg) => return print_error(format!("reading config at {}", config_path), msg),
     };
 
     let hashmap = match doc.into_hash() {
         Some(hash) => hash,
-        None => return error(format!("parsing config at {}", config_path), "cannot convert yaml to hashmap".to_string()),
+        None => return print_error(format!("parsing config at {}", config_path), "cannot convert yaml to hashmap".to_string()),
     };
 
     println!("\x1b[1;33mChecking for clutter\x1b[m");
@@ -103,7 +103,7 @@ fn main() {
     for (key, body) in hashmap {
         clean = clean && is_yaml_entry_clean(key, body)
             .unwrap_or_else(
-                |(when, err)| {error(when, err); false}
+                |(when, err)| {print_error(when, err); false}
             )
     }
 
